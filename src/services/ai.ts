@@ -1,37 +1,76 @@
+import Constants from 'expo-constants';
 import { Category, Transaction, FinancialAdvice } from '../types';
 
-const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  Alimentation: ['restaurant', 'café', 'épicerie', 'supermarché', 'courses', 'repas', 'nourriture', 'food', 'mcdo', 'kfc', 'pizza', 'burger', 'pain', 'boulangerie', 'lait', 'viande', 'fruits', 'légumes'],
-  Transport: ['essence', 'carburant', 'uber', 'taxi', 'bus', 'métro', 'train', 'avion', 'parking', 'voiture', 'assurance auto', 'entretien', 'péage', 'autoroute'],
-  Loisirs: ['cinéma', 'concert', 'jeux', 'streaming', 'netflix', 'spotify', 'sortie', 'bar', 'voyage', 'vacances', 'hôtel', 'musée', 'sport', 'gym', 'football'],
-  Logement: ['loyer', 'hypothèque', 'électricité', 'eau', 'gaz', 'internet', 'téléphone', 'charges', 'réparation', 'décoration', 'mobilier'],
-  Santé: ['médecin', 'pharmacie', 'dentiste', 'hôpital', 'assurance santé', 'médicament', 'consultation', 'analyse', 'sport'],
-  Éducation: ['cours', 'formation', 'livre', 'école', 'université', 'certification', 'langue', 'tutorat'],
-  Shopping: ['vêtements', 'chaussures', 'électronique', 'téléphone', 'ordinateur', 'bijoux', 'cosmétique', 'accessoire', 'amazon'],
-};
+const CATEGORIES: Category[] = ['Alimentation', 'Transport', 'Loisirs', 'Logement', 'Santé', 'Éducation', 'Shopping', 'Autres', 'Revenu'];
 
-export function classifyTransaction(description: string): Category {
-  const lowerDesc = description.toLowerCase();
+export async function classifyWithGroq(description: string): Promise<Category | null> {
+  const apiKey = Constants.expoConfig?.extra?.GROQ_API_KEY;
   
-  let bestMatch: { category: string; score: number } | null = null;
-  
-  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
-    let score = 0;
-    for (const keyword of keywords) {
-      if (lowerDesc.includes(keyword)) {
-        score += keyword.length;
-      }
-    }
-    if (score > 0 && (!bestMatch || score > bestMatch.score)) {
-      bestMatch = { category, score };
-    }
+  if (!apiKey || apiKey.trim().length === 0) {
+    console.log('[Groq] No API key configured');
+    return null;
   }
-  
-  if (bestMatch) {
-    return bestMatch.category as Category;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: [
+          {
+            role: 'user',
+            content: `Classifie cette transaction financière dans une seule catégorie parmi: ${CATEGORIES.join(', ')}.\nDescription: "${description}"\nRéponds uniquement par le nom exact de la catégorie.`,
+          },
+        ],
+        max_tokens: 20,
+        temperature: 0,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    const rawText = data.choices?.[0]?.message?.content?.trim() || '';
+    
+    let text = rawText
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`/g, '')
+      .replace(/["'«»]/g, '')
+      .split('\n')[0]
+      .trim();
+    
+    const normalizedText = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    
+    const matchedCategory = CATEGORIES.find(c => {
+      const normalizedCategory = c.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return normalizedText === normalizedCategory || normalizedText.includes(normalizedCategory);
+    });
+    
+    if (matchedCategory) {
+      return matchedCategory;
+    }
+    
+    return null;
+  } catch {
+    clearTimeout(timeoutId);
+    return null;
   }
-  
-  return 'Autres';
+}
+
+export async function classifyTransaction(description: string): Promise<Category | null> {
+  return classifyWithGroq(description);
 }
 
 export function forecastBudget(historicalData: { month: string; expense: number; income: number }[], targetMonth: string): { predictedExpense: number; predictedIncome: number; confidence: number } {

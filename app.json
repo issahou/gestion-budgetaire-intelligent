@@ -26,6 +26,9 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "extra": {
+      "GROQ_API_KEY": ""
+    },
     "plugins": [
       "expo-sqlite"
     ]

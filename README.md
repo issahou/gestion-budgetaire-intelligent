@@ -11,7 +11,7 @@ Application mobile de gestion budgétaire personnelle avec intelligence artifici
 - Vue par mois avec solde, revenus et dépenses
 
 ### Intelligence Artificielle
-- **Classification automatique** des dépenses selon la description
+- **Classification automatique** des dépenses via Groq (LLaMA 3) avec fallback local par mots-clés
 - **Prévision budgétaire** par régression linéaire sur 6 mois
 - **Conseils financiers personnalisés** avec détection de dépassements, catégories critiques et taux d'épargne
 
@@ -25,8 +25,33 @@ Application mobile de gestion budgétaire personnelle avec intelligence artifici
 - **Frontend** : React Native + Expo SDK 54
 - **Langage** : TypeScript
 - **Base de données** : SQLite via `expo-sqlite`
-- **IA** : Algorithmes locaux (keyword matching, régression linéaire, règles heuristiques)
+- **IA** : Groq (LLaMA 3) + algorithmes locaux (keyword matching, régression linéaire, règles heuristiques)
 - **Stockage web** : localStorage (fallback pour Expo Web)
+
+## Configuration
+
+### Clé API Groq
+
+Pour activer la classification IA, ajoutez votre clé API Groq dans `app.json` :
+
+```json
+{
+  "expo": {
+    ...
+    "extra": {
+      "GROQ_API_KEY": "votre_cle_api_groq"
+    }
+  }
+}
+```
+
+Vous pouvez également créer un fichier `.env` à la racine du projet :
+
+```
+GROQ_API_KEY=votre_cle_api_groq
+```
+
+Sans clé API, l'application utilise automatiquement la classification locale par mots-clés.
 
 ## Installation
 

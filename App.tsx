@@ -214,10 +214,10 @@ function AddTransactionScreen({ onAdd, onCancel }: {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   });
+  const [classifying, setClassifying] = useState(false);
+  const [classifiedCategory, setClassifiedCategory] = useState<Category | null>(null);
 
-  const suggestedCategory = description ? classifyTransaction(description) : category;
-
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const parsedAmount = parseFloat(amount);
     if (!parsedAmount || parsedAmount <= 0) {
       Alert.alert('Erreur', 'Veuillez entrer un montant valide');
@@ -227,17 +227,36 @@ function AddTransactionScreen({ onAdd, onCancel }: {
       Alert.alert('Erreur', 'Veuillez entrer une description');
       return;
     }
-    
-    onAdd({
-      type,
-      amount: parsedAmount,
-      category: suggestedCategory,
-      description: description.trim(),
-      date,
-    });
-    
-    setAmount('');
-    setDescription('');
+
+    setClassifying(true);
+    try {
+      const result = await classifyTransaction(description.trim());
+      
+      if (!result) {
+        Alert.alert('Erreur', 'La classification IA a échoué. Veuillez sélectionner une catégorie manuellement.');
+        return;
+      }
+      
+      setCategory(result);
+      setClassifiedCategory(result);
+      
+      onAdd({
+        type,
+        amount: parsedAmount,
+        category: result,
+        description: description.trim(),
+        date,
+      });
+      
+      setAmount('');
+      setDescription('');
+      setClassifiedCategory(null);
+    } catch (error) {
+      console.error('Classification failed:', error);
+      Alert.alert('Erreur', 'La classification a échoué. Veuillez réessayer.');
+    } finally {
+      setClassifying(false);
+    }
   };
 
   return (
@@ -280,8 +299,11 @@ function AddTransactionScreen({ onAdd, onCancel }: {
           placeholder="Ex: Courses au supermarché"
           autoCapitalize="none"
         />
-        {description.length > 0 && (
-          <Text style={styles.aiHint}>💡 Catégorie suggérée: {CATEGORY_ICONS[suggestedCategory]} {suggestedCategory}</Text>
+        {classifiedCategory && (
+          <Text style={styles.aiHint}>
+            💡 Catégorie: {CATEGORY_ICONS[classifiedCategory]} {classifiedCategory} 
+            <Text style={styles.sourceBadge}> (IA Groq)</Text>
+          </Text>
         )}
       </View>
 
@@ -292,11 +314,11 @@ function AddTransactionScreen({ onAdd, onCancel }: {
             {CATEGORIES.filter(c => c !== 'Revenu').map(cat => (
               <TouchableOpacity
                 key={cat}
-                style={[styles.categoryChip, suggestedCategory === cat && styles.categoryChipActive]}
+                style={[styles.categoryChip, category === cat && styles.categoryChipActive]}
                 onPress={() => setCategory(cat)}
               >
                 <Text style={styles.categoryChipIcon}>{CATEGORY_ICONS[cat]}</Text>
-                <Text style={[styles.categoryChipText, suggestedCategory === cat && styles.categoryChipTextActive]}>{cat}</Text>
+                <Text style={[styles.categoryChipText, category === cat && styles.categoryChipTextActive]}>{cat}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -317,8 +339,8 @@ function AddTransactionScreen({ onAdd, onCancel }: {
         <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
           <Text style={styles.cancelButtonText}>Annuler</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.submitButton} onPress={handleSubmit}>
-          <Text style={styles.submitButtonText}>Ajouter</Text>
+        <TouchableOpacity style={styles.submitButton} onPress={handleSubmit} disabled={classifying}>
+          <Text style={styles.submitButtonText}>{classifying ? 'Classification...' : 'Ajouter'}</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -841,6 +863,11 @@ const styles = StyleSheet.create({
   categoryChipTextActive: {
     color: '#4F46E5',
     fontWeight: '600',
+  },
+  sourceBadge: {
+    fontSize: 12,
+    color: '#64748B',
+    fontStyle: 'italic',
   },
   buttonRow: {
     flexDirection: 'row',
