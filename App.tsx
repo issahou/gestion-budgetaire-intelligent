@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { initDatabase, addTransaction, getAllTransactions, getMonthlyTotals, getCategoryTotals, getHistoricalMonthlyTotals } from '@/db/database';
-import { Transaction, Category, TransactionType, FinancialAdvice } from '@/types';
-import { classifyTransaction, forecastBudget, generateFinancialAdvice } from '@/services/ai';
+import { initDatabase, addTransaction, getAllTransactions, getMonthlyTotals, getCategoryTotals, getHistoricalMonthlyTotals, getBudgets, getDb } from '@/db/database';
+import { Transaction, Category, TransactionType, FinancialAdvice, UserBudget, BudgetForecast } from '@/types';
+import { classifyTransaction, forecastBudget, generateGroqAdvice } from '@/services/ai';
 
 const CATEGORIES: Category[] = ['Alimentation', 'Transport', 'Loisirs', 'Logement', 'Santé', 'Éducation', 'Shopping', 'Autres', 'Revenu'];
 const CATEGORY_ICONS: Record<Category, string> = {
@@ -19,7 +19,7 @@ const CATEGORY_ICONS: Record<Category, string> = {
   Revenu: '💰',
 };
 
-type Screen = 'dashboard' | 'add' | 'transactions' | 'ai';
+type Screen = 'dashboard' | 'add' | 'transactions' | 'ai' | 'budget';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('dashboard');
@@ -84,6 +84,8 @@ export default function App() {
         return <TransactionsScreen transactions={transactions} onDelete={handleDeleteTransaction} onBack={() => setCurrentScreen('dashboard')} />;
       case 'ai':
         return <AIScreen transactions={transactions} currentMonth={currentMonth} onBack={() => setCurrentScreen('dashboard')} />;
+      case 'budget':
+        return <BudgetScreen currentMonth={currentMonth} onBack={() => setCurrentScreen('dashboard')} />;
       default:
         return null;
     }
@@ -197,6 +199,9 @@ function DashboardScreen({ transactions, currentMonth, onNavigate }: {
 
       <TouchableOpacity onPress={() => onNavigate('ai')} style={styles.aiButton}>
         <Text style={styles.aiButtonText}>🤖 Conseils IA</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => onNavigate('budget')} style={styles.budgetButton}>
+        <Text style={styles.budgetButtonText}>💰 Budget cible</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -402,23 +407,25 @@ function AIScreen({ transactions, currentMonth, onBack }: {
   currentMonth: string;
   onBack: () => void;
 }) {
-  const [forecast, setForecast] = useState<{ predictedExpense: number; predictedIncome: number; confidence: number } | null>(null);
+  const [forecast, setForecast] = useState<BudgetForecast | null>(null);
   const [advice, setAdvice] = useState<FinancialAdvice[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function analyze() {
       try {
-        const [historical, monthlyTotals, categoryTotals] = await Promise.all([
+        const [historical, monthlyTotals, categoryTotals, userBudgets] = await Promise.all([
           getHistoricalMonthlyTotals(6),
           getMonthlyTotals(currentMonth),
           getCategoryTotals(currentMonth),
+          getBudgets(currentMonth),
         ]);
         
-        const forecastResult = forecastBudget(historical, currentMonth);
+        const forecastResult = forecastBudget(historical, currentMonth, monthlyTotals, userBudgets, categoryTotals, transactions);
         setForecast(forecastResult);
         
-        const adviceResult = generateFinancialAdvice(transactions, monthlyTotals, categoryTotals);
+        const adviceResult = await generateGroqAdvice(monthlyTotals, categoryTotals, historical);
+        console.log('[AIScreen] Advice result:', adviceResult.length, 'advices');
         setAdvice(adviceResult);
       } catch (error) {
         console.error('AI analysis failed:', error);
@@ -443,6 +450,26 @@ function AIScreen({ transactions, currentMonth, onBack }: {
     );
   }
 
+  const getForecastSourceLabel = (source: string) => {
+    switch (source) {
+      case 'heuristic':
+        return 'Prévision estimée (règle 50/30/20)';
+      case 'trend':
+        return 'Prévision estimée (tendance)';
+      case 'none':
+      default:
+        return 'Données insuffisantes';
+    }
+  };
+
+  const getMonthProgress = (month: string) => {
+    const now = new Date();
+    const [year, monthNum] = month.split('-').map(Number);
+    const daysInMonth = new Date(year, monthNum, 0).getDate();
+    const daysElapsed = Math.min(now.getDate(), daysInMonth);
+    return { daysElapsed, daysTotal: daysInMonth };
+  };
+
   return (
     <ScrollView style={styles.screenContent} contentContainerStyle={styles.scrollContent}>
       <View style={styles.header}>
@@ -454,25 +481,36 @@ function AIScreen({ transactions, currentMonth, onBack }: {
 
       {forecast && (
         <View style={styles.aiCard}>
-          <Text style={styles.aiCardTitle}>📈 Prévision budgétaire</Text>
-          <View style={styles.forecastRow}>
-            <View style={styles.forecastItem}>
-              <Text style={styles.forecastLabel}>Dépenses prévues</Text>
-              <Text style={[styles.forecastValue, { color: '#DC2626' }]}>{forecast.predictedExpense.toFixed(2)}€</Text>
-            </View>
-            <View style={styles.forecastDivider} />
-            <View style={styles.forecastItem}>
-              <Text style={styles.forecastLabel}>Revenus prévus</Text>
-              <Text style={[styles.forecastValue, { color: '#059669' }]}>{forecast.predictedIncome.toFixed(2)}€</Text>
-            </View>
-          </View>
-          <View style={styles.confidenceRow}>
-            <Text style={styles.confidenceLabel}>Confiance:</Text>
-            <View style={styles.confidenceBar}>
-              <View style={[styles.confidenceFill, { width: `${forecast.confidence * 100}%` }]} />
-            </View>
-            <Text style={styles.confidenceText}>{(forecast.confidence * 100).toFixed(0)}%</Text>
-          </View>
+          <Text style={styles.aiCardTitle}>📈 {getForecastSourceLabel(forecast.source)}</Text>
+          {forecast.source !== 'none' && (
+            <Text style={styles.progressText}>
+              Progression: {getMonthProgress(forecast.month).daysElapsed}/{getMonthProgress(forecast.month).daysTotal} jours
+            </Text>
+          )}
+          {forecast.source === 'none' ? (
+            <Text style={styles.emptyText}>Ajoutez plus de transactions pour obtenir une prévision.</Text>
+          ) : (
+            <>
+              <View style={styles.forecastRow}>
+                <View style={styles.forecastItem}>
+                  <Text style={styles.forecastLabel}>Dépenses prévues</Text>
+                  <Text style={[styles.forecastValue, { color: '#DC2626' }]}>{forecast.predictedExpense.toFixed(2)}€</Text>
+                </View>
+                <View style={styles.forecastDivider} />
+                <View style={styles.forecastItem}>
+                  <Text style={styles.forecastLabel}>Revenus prévus</Text>
+                  <Text style={[styles.forecastValue, { color: '#059669' }]}>{forecast.predictedIncome.toFixed(2)}€</Text>
+                </View>
+              </View>
+              <View style={styles.confidenceRow}>
+                <Text style={styles.confidenceLabel}>Confiance:</Text>
+                <View style={styles.confidenceBar}>
+                  <View style={[styles.confidenceFill, { width: `${forecast.confidence * 100}%` }]} />
+                </View>
+                <Text style={styles.confidenceText}>{(forecast.confidence * 100).toFixed(0)}%</Text>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -483,7 +521,16 @@ function AIScreen({ transactions, currentMonth, onBack }: {
         ) : (
           advice.map(item => (
             <View key={item.id} style={[styles.adviceCard, { borderLeftColor: item.priority === 'high' ? '#DC2626' : item.priority === 'medium' ? '#F59E0B' : '#4F46E5' }]}>
-              <Text style={styles.adviceTitle}>{item.title}</Text>
+              <View style={styles.adviceHeader}>
+                <Text style={styles.adviceTitle}>{item.title}</Text>
+                {item.source && (
+                  <View style={[styles.sourceBadgeAdvice, { backgroundColor: item.source === 'groq' ? '#E0E7FF' : '#F1F5F9' }]}>
+                    <Text style={[styles.sourceBadgeAdviceText, { color: item.source === 'groq' ? '#4F46E5' : '#64748B' }]}>
+                      {item.source === 'groq' ? 'IA' : 'Règle'}
+                    </Text>
+                  </View>
+                )}
+              </View>
               <Text style={styles.adviceMessage}>{item.message}</Text>
               <View style={[styles.priorityBadge, { backgroundColor: item.priority === 'high' ? '#FEE2E2' : item.priority === 'medium' ? '#FEF3C7' : '#E0E7FF' }]}>
                 <Text style={[styles.priorityText, { color: item.priority === 'high' ? '#DC2626' : item.priority === 'medium' ? '#F59E0B' : '#4F46E5' }]}>
@@ -498,12 +545,138 @@ function AIScreen({ transactions, currentMonth, onBack }: {
   );
 }
 
+function BudgetScreen({ currentMonth, onBack }: { currentMonth: string; onBack: () => void }) {
+  const [budgets, setBudgets] = useState<UserBudget[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const db = await getDb();
+        const rows = await db.getAllAsync<UserBudget & { id: number }>(
+          'SELECT id, category, amount, month FROM budgets WHERE month = ?',
+          [currentMonth]
+        );
+        setBudgets(rows.map(r => ({ id: r.id, category: r.category as Category, amount: r.amount, month: r.month })));
+      } catch (error) {
+        console.error('Failed to load budgets:', error);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [currentMonth]);
+
+  const handleSaveBudget = async (category: Category, amount: string) => {
+    const parsedAmount = parseFloat(amount);
+    if (!parsedAmount || parsedAmount <= 0) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const db = await getDb();
+      await db.runAsync(
+        'INSERT OR REPLACE INTO budgets (category, amount, month) VALUES (?, ?, ?)',
+        [category, parsedAmount, currentMonth]
+      );
+      
+      setBudgets(prev => {
+        const existing = prev.findIndex(b => b.category === category);
+        const newBudget: UserBudget = { category, amount: parsedAmount, month: currentMonth };
+        if (existing >= 0) {
+          const updated = [...prev];
+          updated[existing] = newBudget;
+          return updated;
+        }
+        return [...prev, newBudget];
+      });
+    } catch (error) {
+      console.error('Failed to save budget:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteBudget = async (category: Category) => {
+    try {
+      const db = await getDb();
+      await db.runAsync('DELETE FROM budgets WHERE category = ? AND month = ?', [category, currentMonth]);
+      setBudgets(prev => prev.filter(b => b.category !== category));
+    } catch (error) {
+      console.error('Failed to delete budget:', error);
+    }
+  };
+
+  if (loading) {
+    return (
+      <ScrollView style={styles.screenContent} contentContainerStyle={styles.scrollContent}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={onBack}>
+            <Text style={styles.backButton}>← Retour</Text>
+          </TouchableOpacity>
+          <Text style={styles.screenTitle}>Budget cible</Text>
+        </View>
+        <ActivityIndicator size="large" color="#4F46E5" style={{ marginTop: 40 }} />
+      </ScrollView>
+    );
+  }
+
+  return (
+    <ScrollView style={styles.screenContent} contentContainerStyle={styles.scrollContent}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={onBack}>
+          <Text style={styles.backButton}>← Retour</Text>
+        </TouchableOpacity>
+        <Text style={styles.screenTitle}>Budget cible</Text>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Définir votre budget mensuel par catégorie</Text>
+        <Text style={styles.sectionSubtitle}>Mois: {currentMonth}</Text>
+        
+        {CATEGORIES.filter(c => c !== 'Revenu').map(cat => {
+          const existingBudget = budgets.find(b => b.category === cat);
+          return (
+            <View key={cat} style={styles.budgetRow}>
+              <View style={styles.budgetLeft}>
+                <Text style={styles.categoryIcon}>{CATEGORY_ICONS[cat]}</Text>
+                <Text style={styles.categoryName}>{cat}</Text>
+              </View>
+              <View style={styles.budgetRight}>
+                <TextInput
+                  style={styles.budgetInput}
+                  value={existingBudget ? existingBudget.amount.toString() : ''}
+                  onChangeText={(text) => {
+                    if (text === '' || parseFloat(text) >= 0) {
+                      handleSaveBudget(cat, text);
+                    }
+                  }}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                />
+                {existingBudget && (
+                  <TouchableOpacity onPress={() => handleDeleteBudget(cat)}>
+                    <Text style={styles.deleteButton}>🗑️</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}
+
 function BottomNav({ currentScreen, onNavigate }: { currentScreen: Screen; onNavigate: (screen: Screen) => void }) {
   const navItems: { screen: Screen; label: string; icon: string }[] = [
     { screen: 'dashboard', label: 'Accueil', icon: '🏠' },
     { screen: 'add', label: 'Ajouter', icon: '➕' },
     { screen: 'transactions', label: 'Transactions', icon: '📋' },
     { screen: 'ai', label: 'IA', icon: '🤖' },
+    { screen: 'budget', label: 'Budget', icon: '💰' },
   ];
 
   return (
@@ -737,12 +910,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#4F46E5',
     marginHorizontal: 20,
     marginTop: 24,
-    marginBottom: 20,
     padding: 16,
     borderRadius: 12,
     alignItems: 'center',
   },
   aiButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  budgetButton: {
+    backgroundColor: '#059669',
+    marginHorizontal: 20,
+    marginTop: 12,
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  budgetButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
@@ -916,6 +1101,11 @@ const styles = StyleSheet.create({
     color: '#1E293B',
     marginBottom: 16,
   },
+  progressText: {
+    fontSize: 12,
+    color: '#64748B',
+    marginBottom: 12,
+  },
   forecastRow: {
     flexDirection: 'row',
     marginBottom: 16,
@@ -982,6 +1172,21 @@ const styles = StyleSheet.create({
     color: '#1E293B',
     marginBottom: 6,
   },
+  adviceHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  sourceBadgeAdvice: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  sourceBadgeAdviceText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
   adviceMessage: {
     fontSize: 14,
     color: '#475569',
@@ -997,5 +1202,45 @@ const styles = StyleSheet.create({
   priorityText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  sectionSubtitle: {
+    fontSize: 14,
+    color: '#64748B',
+    marginBottom: 12,
+    marginTop: 4,
+  },
+  budgetRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  budgetLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  budgetRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  budgetInput: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    padding: 8,
+    width: 100,
+    textAlign: 'right',
+    fontSize: 14,
   },
 });

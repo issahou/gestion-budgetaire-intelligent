@@ -17,6 +17,7 @@ export interface BudgetForecast {
   predictedExpense: number;
   predictedIncome: number;
   confidence: number;
+  source: 'none' | 'heuristic' | 'trend';
 }
 
 export interface FinancialAdvice {
@@ -25,4 +26,12 @@ export interface FinancialAdvice {
   message: string;
   priority: 'high' | 'medium' | 'low';
   category?: Category;
+  source?: 'groq' | 'rule';
+}
+
+export interface UserBudget {
+  id?: number;
+  category: Category;
+  amount: number;
+  month: string;
 }

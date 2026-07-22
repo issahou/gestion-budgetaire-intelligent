@@ -1,7 +1,9 @@
-import { Transaction, Category, TransactionType } from '../types';
+import { Transaction, Category, TransactionType, UserBudget } from '../types';
 
 const STORAGE_KEY = 'budgetbuddy_transactions';
+const BUDGETS_STORAGE_KEY = 'budgetbuddy_budgets';
 let transactions: Transaction[] = [];
+let budgets: UserBudget[] = [];
 
 function loadFromStorage(): void {
   try {
@@ -9,14 +11,20 @@ function loadFromStorage(): void {
     if (data) {
       transactions = JSON.parse(data);
     }
+    const budgetData = localStorage.getItem(BUDGETS_STORAGE_KEY);
+    if (budgetData) {
+      budgets = JSON.parse(budgetData);
+    }
   } catch {
     transactions = [];
+    budgets = [];
   }
 }
 
 function saveToStorage(): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+    localStorage.setItem(BUDGETS_STORAGE_KEY, JSON.stringify(budgets));
   } catch {
     // ignore storage errors
   }
@@ -101,7 +109,7 @@ export async function getHistoricalMonthlyTotals(months: number): Promise<{ mont
   const results: { month: string; income: number; expense: number }[] = [];
   
   const now = new Date();
-  for (let i = months - 1; i >= 0; i--) {
+  for (let i = months; i >= 1; i--) {
     const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const monthStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     const totals = await getMonthlyTotals(monthStr);
@@ -113,4 +121,24 @@ export async function getHistoricalMonthlyTotals(months: number): Promise<{ mont
   }
   
   return results;
+}
+
+export async function getBudgets(month: string): Promise<UserBudget[]> {
+  return budgets.filter(b => b.month === month);
+}
+
+export async function saveBudget(budget: Omit<UserBudget, 'id'>): Promise<void> {
+  const existingIndex = budgets.findIndex(b => b.category === budget.category && b.month === budget.month);
+  const newBudget: UserBudget = { ...budget, id: existingIndex >= 0 ? budgets[existingIndex].id : Date.now() };
+  if (existingIndex >= 0) {
+    budgets[existingIndex] = newBudget;
+  } else {
+    budgets.push(newBudget);
+  }
+  saveToStorage();
+}
+
+export async function deleteBudget(category: Category, month: string): Promise<void> {
+  budgets = budgets.filter(b => !(b.category === category && b.month === month));
+  saveToStorage();
 }

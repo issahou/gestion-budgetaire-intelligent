@@ -1,5 +1,5 @@
 import { openDatabaseAsync } from 'expo-sqlite';
-import { Transaction, Category, TransactionType } from '../types';
+import { Transaction, Category, TransactionType, UserBudget } from '../types';
 
 const DB_NAME = 'budgetbuddy.db';
 
@@ -11,6 +11,8 @@ async function getDb() {
   }
   return dbPromise;
 }
+
+export { getDb };
 
 export async function initDatabase() {
   const db = await getDb();
@@ -25,8 +27,16 @@ export async function initDatabase() {
       date TEXT NOT NULL,
       createdAt INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS budgets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      amount REAL NOT NULL,
+      month TEXT NOT NULL,
+      UNIQUE(category, month)
+    );
     CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
     CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);
+    CREATE INDEX IF NOT EXISTS idx_budgets_month ON budgets(month);
   `);
 }
 
@@ -120,7 +130,7 @@ export async function getHistoricalMonthlyTotals(months: number): Promise<{ mont
   const results: { month: string; income: number; expense: number }[] = [];
   
   const now = new Date();
-  for (let i = months - 1; i >= 0; i--) {
+  for (let i = months; i >= 1; i--) {
     const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const monthStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     
@@ -133,4 +143,26 @@ export async function getHistoricalMonthlyTotals(months: number): Promise<{ mont
   }
   
   return results;
+}
+
+export async function getBudgets(month: string): Promise<UserBudget[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ category: string; amount: number; month: string }>(
+    'SELECT category, amount, month FROM budgets WHERE month = ?',
+    [month]
+  );
+  return rows.map(r => ({ category: r.category as Category, amount: r.amount, month: r.month }));
+}
+
+export async function saveBudget(budget: Omit<UserBudget, 'id'>): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    'INSERT OR REPLACE INTO budgets (category, amount, month) VALUES (?, ?, ?)',
+    [budget.category, budget.amount, budget.month]
+  );
+}
+
+export async function deleteBudget(category: Category, month: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('DELETE FROM budgets WHERE category = ? AND month = ?', [category, month]);
 }
